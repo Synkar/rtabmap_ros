@@ -1,0 +1,21 @@
+Rtabmap:
+  DetectionRate: 0.5
+
+Mem:
+  InitWMWithAllNodes: false
+  IncrementalMemory: true
+
+Kp:
+  MaxFeatures: 500
+
+RGBD:
+  OptimizeMaxError: 3.0
+
+Optimizer:
+  Robust: false
+
+Vis:
+  MaxFeatures: 1000
+
+Marker:
+  MaxRange: 0.6
