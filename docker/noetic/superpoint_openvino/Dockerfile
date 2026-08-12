@@ -173,8 +173,9 @@ COPY ./docker/noetic/superpoint_openvino/ros_entrypoint.sh /ros_entrypoint.sh
 RUN chmod +x /ros_entrypoint.sh
 ENTRYPOINT [ "/ros_entrypoint.sh" ]
 
-# Build/install Synkar RTAB-Map library with SuperPoint OpenVINO backend
-# (Source OpenVINO + ROS setup directly; do not source the entrypoint — it ends with exec.)
+# Build/install Synkar RTAB-Map library with SuperPoint OpenVINO backend.
+# Use OpenVINO's bundled OpenCV for a single consistent ABI; rebuild cv_bridge
+# against the same OpenCV below so ROS image nodes do not mix 4.2 and 4.8.
 RUN git clone --depth 1 -b feature/openvino-superpoint-noetic \
       https://github.com/Synkar/rtabmap.git rtabmap && \
     source /opt/ros/noetic/setup.bash && \
@@ -193,6 +194,24 @@ RUN git clone --depth 1 -b feature/openvino-superpoint-noetic \
     make install && \
     cd /workspace && \
     rm -rf rtabmap && \
+    ldconfig
+
+# Rebuild cv_bridge / image_geometry against OpenVINO OpenCV (avoids 4.2+4.8 mix at runtime)
+RUN source /opt/ros/noetic/setup.bash && \
+    if [ -f /opt/intel/openvino/setupvars.sh ]; then source /opt/intel/openvino/setupvars.sh; \
+    elif [ -f /opt/intel/openvino_2024/setupvars.sh ]; then source /opt/intel/openvino_2024/setupvars.sh; \
+    elif ls /opt/intel/openvino_*/setupvars.sh >/dev/null 2>&1; then source "$(ls -1 /opt/intel/openvino_*/setupvars.sh | head -n1)"; fi && \
+    mkdir -p /tmp/vision_ws/src && \
+    git clone --depth 1 -b noetic https://github.com/ros-perception/vision_opencv.git /tmp/vision_ws/src/vision_opencv && \
+    cd /tmp/vision_ws && \
+    catkin init && \
+    catkin config --install --install-space /opt/ros/noetic --whitelist cv_bridge image_geometry && \
+    catkin build --cmake-args \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+      -DOpenCV_DIR="${OpenCV_DIR}" && \
+    cd /workspace && \
+    rm -rf /tmp/vision_ws && \
     ldconfig
 
 # Catkin workspace for rtabmap_ros
@@ -216,6 +235,7 @@ RUN source /opt/ros/noetic/setup.bash && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
     catkin build --cmake-args \
       -DPYTHON_EXECUTABLE=/usr/bin/python3 \
-      -DRTABMAP_SYNC_MULTI_RGBD=ON && \
+      -DRTABMAP_SYNC_MULTI_RGBD=ON \
+      -DOpenCV_DIR="${OpenCV_DIR}" && \
     cd /workspace && \
     rm -rf catkin_ws

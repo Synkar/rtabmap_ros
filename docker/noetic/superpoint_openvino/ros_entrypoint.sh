@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Preserve CMD args: OpenVINO setupvars.sh (and some ROS hooks) can clobber $@.
+_CMD_ARGS=("$@")
+
 # OpenVINO environment (official openvino/ubuntu20_* images)
 if [ -f /opt/intel/openvino/setupvars.sh ]; then
   # shellcheck disable=SC1091
@@ -14,5 +17,10 @@ elif ls /opt/intel/openvino_*/setupvars.sh >/dev/null 2>&1; then
 fi
 
 # setup ros environment
-source "/opt/ros/noetic/setup.bash" --
-exec "$@"
+# shellcheck disable=SC1091
+source "/opt/ros/noetic/setup.bash"
+
+if [ ${#_CMD_ARGS[@]} -eq 0 ]; then
+  exec bash
+fi
+exec "${_CMD_ARGS[@]}"
