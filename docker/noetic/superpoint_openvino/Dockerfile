@@ -1,5 +1,6 @@
 # Image built with OpenVINO SuperPoint support (CPU on Ubuntu 20.04 / ROS Noetic).
-# Base: official openvino/ubuntu20_dev (no NVIDIA runtime, no Torch/SuperGlue).
+# Base: ubuntu:20.04. OpenVINO is installed from Intel apt (no NVIDIA runtime,
+# no Torch/SuperGlue). OpenCV 4.5.5 comes from Synkar non-CUDA debs.
 #
 # Phase 1: OpenVINO inference on CPU only (matches Noetic / Focal).
 # NPU/GPU validation needs Ubuntu 22.04+ OpenVINO containers — not covered here.
@@ -11,7 +12,8 @@
 #     -f docker/noetic/superpoint_openvino/Dockerfile .
 #
 # Example usage (SuperPoint OpenVINO + brute-force matching, no SuperGlue).
-# Mount an ONNX or OpenVINO IR (.xml/.bin) model at runtime:
+# Mount the model at runtime. OpenVINO IR (.xml plus its .bin) is preferred;
+# compile_model also accepts a single .onnx.
 #
 # [Camera]
 # docker run -it --rm --network host --privileged rtabmap_ros:superpoint_openvino \
@@ -26,7 +28,8 @@
 # [VSLAM]  (no --runtime=nvidia)
 # docker run -it --rm --user $UID -e ROS_HOME=/tmp/.ros --network host \
 #   -v ~/.ros:/tmp/.ros \
-#   -v /path/to/superpoint.onnx:/workspace/superpoint.onnx:ro \
+#   -v /path/to/superpoint.xml:/workspace/superpoint.xml:ro \
+#   -v /path/to/superpoint.bin:/workspace/superpoint.bin:ro \
 #   rtabmap_ros:superpoint_openvino \
 #   roslaunch rtabmap_launch rtabmap.launch rtabmap_viz:=false \
 #   database_path:=/tmp/.ros/rtabmap.db \
@@ -37,7 +40,6 @@
 #     --Vis/CorNNType 1 \
 #     --Reg/RepeatOnce false \
 #     --Vis/CorGuessWinSize 0" \
-#   # OpenVINO IR (.xml/.bin) preferred; ONNX also accepted by compile_model
 #   odom_args:="--Vis/CorNNType 1 --Reg/RepeatOnce true --Vis/CorGuessWinSize 40" \
 #   left_image_topic:=/camera/infra1/image_rect_raw \
 #   right_image_topic:=/camera/infra2/image_rect_raw \
@@ -59,15 +61,17 @@
 #     right/camera_info:=/camera/infra2/camera_info _subscribe_stereo:=true"
 #
 
-FROM openvino/ubuntu20_dev:2024.6.0
+FROM ubuntu:20.04
 
-USER root
 WORKDIR /workspace
 ENV DEBIAN_FRONTEND=noninteractive
-ENV ROS_DISTRO=noetic
+SHELL ["/bin/bash", "-c"]
 
-# Use bash for RUN steps that source setup scripts
-RUN rm -f /bin/sh && ln -s /bin/bash /bin/sh
+# apt-get update drops to the _apt user to verify InRelease signatures, and hands its
+# config to apt-key through a hardcoded /tmp/apt.conf.XXXXXX. On this host _apt cannot
+# write there, so every repository fails with "is not signed". Must precede any apt use.
+RUN chmod 1777 /tmp && \
+    printf 'APT::Sandbox::User "root";\n' > /etc/apt/apt.conf.d/10sandbox
 
 # Build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -79,7 +83,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config \
       wget \
       curl \
-      gnupg2 \
+      gnupg \
       lsb-release \
       ca-certificates \
       build-essential \
@@ -89,9 +93,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ROS Noetic apt repository
-RUN echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" \
-      > /etc/apt/sources.list.d/ros-latest.list && \
-    curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add -
+RUN curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc \
+      | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" \
+      > /etc/apt/sources.list.d/ros-latest.list
 
 # ROS Noetic packages (deb install — do not build ROS from source)
 RUN apt-get update && \
@@ -105,7 +110,7 @@ RUN apt-get update && \
       ros-noetic-image-transport-plugins \
       ros-noetic-stereo-image-proc && \
     apt-get remove -y ros-noetic-rtabmap || true && \
-    (rosdep init || true) && \
+    rosdep init && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # GTSAM
@@ -120,14 +125,34 @@ RUN add-apt-repository ppa:joseluisblancoc/mrpt-stable -y && \
     apt-get install -y --no-install-recommends libmrpt-poses-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# OpenCV from Synkar prebuilt debs (nonfree / xfeatures2d; no OpenCV from source).
+# OpenVINO Runtime from Intel apt (CPU only; Ubuntu 20.04)
+ARG OPENVINO_VERSION=2025.4.0
+RUN wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+      | gpg --dearmor -o /usr/share/keyrings/intel-openvino.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/intel-openvino.gpg] https://apt.repos.intel.com/openvino ubuntu20 main" \
+      > /etc/apt/sources.list.d/intel-openvino.list && \
+    apt-get update && \
+    if apt-cache show "openvino-${OPENVINO_VERSION}" >/dev/null 2>&1; then \
+      apt-get install -y --no-install-recommends "openvino-${OPENVINO_VERSION}"; \
+    else \
+      OPENVINO_PKG=$(apt-cache search --names-only '^openvino-2025\.' | awk '{print $1}' | sort -V | tail -n1) && \
+      if [ -z "${OPENVINO_PKG}" ]; then OPENVINO_PKG=openvino; fi && \
+      apt-get install -y --no-install-recommends "${OPENVINO_PKG}"; \
+    fi && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# OpenCV from Synkar prebuilt debs (nonfree / xfeatures2d; no CUDA; no OpenCV from source).
 # Install as parallel packages (do not replace ros-noetic libopencv 4.2 names) so ROS
 # binaries keep their dependencies; force-overwrite files where paths overlap.
-# Pattern adapted from delivery_core Dockerfile.
+# All packages compiled in this image (rtabmap, cv_bridge, rtabmap_ros) use 4.5.5.
+#
+# OpenCV_DIR must be the real CMake dir (not a symlink): OpenCVConfig.cmake computes
+# lib paths relative to it.
+ENV OpenCV_DIR=/usr/lib/cmake/opencv4
+ENV PYTHONPATH=/usr/lib/python3.8/site-packages
 ARG OPENCV_VERSION=4.5.5
-ARG OPENCV_RELEASE_TAG=4.5.5-ffmpeg
-RUN set -e && \
-    wget -q -P /tmp \
+ARG OPENCV_RELEASE_TAG=${OPENCV_VERSION}-nocuda
+RUN wget -q -P /tmp \
       "https://github.com/Synkar/opencv/releases/download/${OPENCV_RELEASE_TAG}/OpenCV-${OPENCV_VERSION}-x86_64-dev.deb" && \
     wget -q -P /tmp \
       "https://github.com/Synkar/opencv/releases/download/${OPENCV_RELEASE_TAG}/OpenCV-${OPENCV_VERSION}-x86_64-libs.deb" && \
@@ -140,19 +165,31 @@ RUN set -e && \
     sed -i '/^Depends:/d' DEBIAN/control && \
     dpkg -b /tmp/OpenCV-${OPENCV_VERSION}-x86_64 /tmp/OpenCV-${OPENCV_VERSION}-x86_64-dev-renamed.deb && \
     dpkg -i --force-overwrite /tmp/OpenCV-${OPENCV_VERSION}-x86_64-libs.deb || true && \
-    dpkg -i --force-overwrite /tmp/OpenCV-${OPENCV_VERSION}-x86_64-dev-renamed.deb || true && \
+    dpkg -i --force-overwrite /tmp/OpenCV-${OPENCV_VERSION}-x86_64-dev-renamed.deb && \
     dpkg-deb -x /tmp/OpenCV-${OPENCV_VERSION}-x86_64-python.deb /tmp/OpenCV-${OPENCV_VERSION}-x86_64-python && \
     cd /tmp/OpenCV-${OPENCV_VERSION}-x86_64-python && \
     dpkg --control /tmp/OpenCV-${OPENCV_VERSION}-x86_64-python.deb && \
     sed -i 's/^Package:.*/Package: python3-opencv-synkar/' DEBIAN/control && \
     sed -i '/^Depends:/d' DEBIAN/control && \
     dpkg -b /tmp/OpenCV-${OPENCV_VERSION}-x86_64-python /tmp/OpenCV-${OPENCV_VERSION}-x86_64-python-renamed.deb && \
-    dpkg -i --force-overwrite /tmp/OpenCV-${OPENCV_VERSION}-x86_64-python-renamed.deb || true && \
+    dpkg -i --force-overwrite /tmp/OpenCV-${OPENCV_VERSION}-x86_64-python-renamed.deb && \
     ldconfig && \
-    rm -rf /tmp/OpenCV-${OPENCV_VERSION}* /tmp/*.deb && \
+    if ! grep -q "${OPENCV_VERSION}" "${OpenCV_DIR}/OpenCVConfig.cmake" 2>/dev/null; then \
+      echo "Synkar OpenCV ${OPENCV_VERSION} not found at ${OpenCV_DIR}" >&2; \
+      exit 1; \
+    fi && \
+    rm -rf /tmp/OpenCV-${OPENCV_VERSION}* && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-ENV PYTHONPATH="${PYTHONPATH}:/usr/lib/python3.8/site-packages"
+# The debs above are force-installed with dpkg and their Depends stripped, so apt
+# never learns that cv2 and opencv_sfm need libglog. Supply those libs and let -f
+# repair the dpkg state before anything links against OpenCV.
+RUN apt-get update && \
+    apt-get install -y -f --no-install-recommends \
+      libgflags2.2 \
+      libunwind8 \
+      libgoogle-glog0v5 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # OpenGV
 RUN git clone https://github.com/laurentkneip/opengv.git && \
@@ -168,20 +205,23 @@ RUN git clone https://github.com/laurentkneip/opengv.git && \
     cd /workspace && \
     rm -rf opengv
 
-# ROS entrypoint (OpenVINO setupvars + Noetic)
-COPY ./docker/noetic/superpoint_openvino/ros_entrypoint.sh /ros_entrypoint.sh
-RUN chmod +x /ros_entrypoint.sh
-ENTRYPOINT [ "/ros_entrypoint.sh" ]
+# Shared OpenVINO/OpenCV environment, sourced by the build steps below and by the
+# entrypoint. Sourcing /ros_entrypoint.sh from a RUN would not work: with no CMD args
+# it execs bash, which silently drops the rest of the command.
+COPY ./docker/noetic/superpoint_openvino/build_env.sh /etc/synkar/build_env.sh
 
 # Build/install Synkar RTAB-Map library with SuperPoint OpenVINO backend.
-# Use OpenVINO's bundled OpenCV for a single consistent ABI; rebuild cv_bridge
-# against the same OpenCV below so ROS image nodes do not mix 4.2 and 4.8.
+# Link against Synkar OpenCV 4.5.5 (not Intel/OpenVINO OpenCV); rebuild cv_bridge
+# against the same OpenCV below so ROS image nodes do not mix 4.2 and 4.5.5.
 RUN git clone --depth 1 -b feature/openvino-superpoint-noetic \
       https://github.com/Synkar/rtabmap.git rtabmap && \
     source /opt/ros/noetic/setup.bash && \
-    if [ -f /opt/intel/openvino/setupvars.sh ]; then source /opt/intel/openvino/setupvars.sh; \
-    elif [ -f /opt/intel/openvino_2024/setupvars.sh ]; then source /opt/intel/openvino_2024/setupvars.sh; \
-    elif ls /opt/intel/openvino_*/setupvars.sh >/dev/null 2>&1; then source "$(ls -1 /opt/intel/openvino_*/setupvars.sh | head -n1)"; fi && \
+    source /etc/synkar/build_env.sh && \
+    OPENVINO_CONFIG=$(find /usr /opt/intel -name OpenVINOConfig.cmake 2>/dev/null | head -n1) && \
+    if [ -z "${OPENVINO_CONFIG}" ]; then \
+      echo "OpenVINOConfig.cmake not found" >&2; \
+      exit 1; \
+    fi && \
     mkdir -p rtabmap/build && \
     cd rtabmap/build && \
     cmake -DCMAKE_BUILD_TYPE=Release \
@@ -189,6 +229,8 @@ RUN git clone --depth 1 -b feature/openvino-superpoint-noetic \
           -DWITH_OPENVINO=ON \
           -DWITH_TORCH=OFF \
           -DWITH_PYTHON=OFF \
+          -DOpenVINO_DIR="$(dirname "${OPENVINO_CONFIG}")" \
+          -DOpenCV_DIR="${OpenCV_DIR}" \
           .. && \
     make -j"$(nproc)" && \
     make install && \
@@ -196,11 +238,8 @@ RUN git clone --depth 1 -b feature/openvino-superpoint-noetic \
     rm -rf rtabmap && \
     ldconfig
 
-# Rebuild cv_bridge / image_geometry against OpenVINO OpenCV (avoids 4.2+4.8 mix at runtime)
+# Rebuild cv_bridge / image_geometry against Synkar OpenCV 4.5.5 (avoids 4.2 mix at runtime)
 RUN source /opt/ros/noetic/setup.bash && \
-    if [ -f /opt/intel/openvino/setupvars.sh ]; then source /opt/intel/openvino/setupvars.sh; \
-    elif [ -f /opt/intel/openvino_2024/setupvars.sh ]; then source /opt/intel/openvino_2024/setupvars.sh; \
-    elif ls /opt/intel/openvino_*/setupvars.sh >/dev/null 2>&1; then source "$(ls -1 /opt/intel/openvino_*/setupvars.sh | head -n1)"; fi && \
     mkdir -p /tmp/vision_ws/src && \
     git clone --depth 1 -b noetic https://github.com/ros-perception/vision_opencv.git /tmp/vision_ws/src/vision_opencv && \
     cd /tmp/vision_ws && \
@@ -224,9 +263,7 @@ RUN source /opt/ros/noetic/setup.bash && \
 COPY . catkin_ws/src/rtabmap_ros
 
 RUN source /opt/ros/noetic/setup.bash && \
-    if [ -f /opt/intel/openvino/setupvars.sh ]; then source /opt/intel/openvino/setupvars.sh; \
-    elif [ -f /opt/intel/openvino_2024/setupvars.sh ]; then source /opt/intel/openvino_2024/setupvars.sh; \
-    elif ls /opt/intel/openvino_*/setupvars.sh >/dev/null 2>&1; then source "$(ls -1 /opt/intel/openvino_*/setupvars.sh | head -n1)"; fi && \
+    source /etc/synkar/build_env.sh && \
     cd catkin_ws && \
     apt-get update && \
     rosdep update --include-eol-distros || rosdep update && \
@@ -239,3 +276,8 @@ RUN source /opt/ros/noetic/setup.bash && \
       -DOpenCV_DIR="${OpenCV_DIR}" && \
     cd /workspace && \
     rm -rf catkin_ws
+
+# Last so that editing the entrypoint does not invalidate any build layer.
+COPY ./docker/noetic/superpoint_openvino/ros_entrypoint.sh /ros_entrypoint.sh
+RUN chmod +x /ros_entrypoint.sh
+ENTRYPOINT [ "/ros_entrypoint.sh" ]

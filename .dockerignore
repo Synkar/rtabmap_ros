@@ -1,0 +1,16 @@
+# The Dockerfiles COPY the whole repo into the catkin workspace. Anything left in
+# here is baked into an image layer even though the workspace is deleted afterwards.
+
+.git
+.github
+.vscode
+
+# catkin_tools / cmake output from local builds
+build
+devel
+install
+logs
+.catkin_tools
+
+**/__pycache__
+**/*.pyc
