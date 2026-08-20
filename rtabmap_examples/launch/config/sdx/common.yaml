@@ -17,7 +17,7 @@ Kp:
 
 SuperPoint:
   OpenVINOModelPath: $(optenv SUPERPOINT_OPENVINO_MODEL /workspace/superpoint.xml)
-  OpenVINODevice: $(optenv SUPERPOINT_OPENVINO_DEVICE CPU)
+  OpenVINODevice: $(optenv OPENVINO_DEVICE CPU)
 
 RGBD:
   CreateOccupancyGrid: true
