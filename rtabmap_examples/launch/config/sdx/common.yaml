@@ -1,0 +1,66 @@
+Rtabmap:
+  WorkingDirectory: $(optenv RESOURCES_PATH /data)/maps/
+  DetectionRate: 1
+  ImagesAlreadyRectified: true
+  StartNewMapOnLoopClosure: false
+
+Mem:
+  InitWMWithAllNodes: true
+  IncrementalMemory: false
+  DepthAsMask: true
+  STMSize: 5
+
+Kp:
+  DetectorStrategy: 99
+  MaxFeatures: 750
+  MaxDepth: 0
+
+SuperPoint:
+  OpenVINOModelPath: $(optenv SUPERPOINT_OPENVINO_MODEL /workspace/superpoint.xml)
+  OpenVINODevice: $(optenv OPENVINO_DEVICE NPU)
+
+RGBD:
+  CreateOccupancyGrid: true
+  MarkerDetection: true
+  OptimizeMaxError: 3.0
+  StartAtOrigin: false
+
+Optimizer:
+  Robust: false
+
+Reg:
+  Force3DoF: true
+
+Vis:
+  MinInliers: 30
+  MaxFeatures: 1500
+  CorGuessWinSize: 40
+  CorNNType: 1
+
+Grid:
+  3D: true
+  CellSize: 0.1
+  NormalsSegmentation: false
+  Sensor: 1
+  RangeMin: 0.3
+  RangeMax: 4.5
+  RayTracing: true
+  DepthDecimation: 1
+  MinClusterSize: 10
+  MaxObstacleHeight: 1.0
+  PreVoxelFiltering: true
+  MinGroundHeight: 0.0
+  MaxGroundHeight: 0.2
+
+GridGlobal:
+  Eroded: true
+  MinSize: 50
+
+Marker:
+  Dictionary: 20
+  Length: 0.106
+  MaxRange: 2.0
+  MinRange: 0.1
+  CornerRefinementMethod: 3
+  VarianceLinear: 0.001
+  VarianceAngular: 0.01
