@@ -96,7 +96,7 @@ docker run "${DOCKER_TTY[@]}" --rm --network host \
   -e RESOURCES_PATH=/data \
   -e MAP_ID="$MAP_ID" \
   -e SUPERPOINT_OPENVINO_MODEL="$CONTAINER_MODEL" \
-  -e OPENVINO_DEVICE=CPU \
+  -e OPENVINO_DEVICE=NPU \
   -e LOCALIZATION_MODE="$LOCALIZATION_MODE" \
   -v "$SCRIPT_DIR/ros_entrypoint.sh":/ros_entrypoint.sh:ro \
   -v "$EXAMPLES_SHARE":/mounted_rtabmap_examples:ro \
